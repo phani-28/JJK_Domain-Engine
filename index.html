@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>JJK Absolute Validation Engine</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
+  
+  <style>
+    body { margin: 0; background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+    #canvas_container { position: relative; width: 1280px; height: 720px; box-shadow: 0 40px 100px rgba(0,0,0,1); border-radius: 12px; overflow: hidden; background: #020005;}
+    canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+    #overlay { position: absolute; z-index: 10; display: flex; justify-content: center; align-items: center; width: 100%; height: 100%; background: rgba(0,0,0,0.8); color: white; font-family: sans-serif; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+  <div id="overlay" onclick="startAudio()"><h1>CLICK TO ACTIVATE DOMAIN</h1></div>
+
+  <img id="shrine_img" src="shrine.jpg" style="display:none;">
+  <img id="mahoraga_img" src="download.jpg" style="display:none;">
+  <img id="mahoraga_bg_img" src="Mahoroga background.jpg" style="display:none;">
+
+  <div id="canvas_container">
+    <video id="webcam" style="display:none;" autoplay playsinline></video>
+    <canvas id="output_canvas" width="1280" height="720"></canvas>
+  </div>
+
+  <script>
+    // --- AUDIO INJECTION ---
+    const sukunaSound = new Audio('sukuna.mp3');
+    const gojoSound = new Audio('gojo.mp3');
+    const mahoragaSound = new Audio('mahoraga.mp3');
+    let audioAllowed = false;
+    function startAudio() { document.getElementById('overlay').style.display = 'none'; audioAllowed = true; }
+    function playSound(sound) {
+        if (!audioAllowed) return;
+        [sukunaSound, gojoSound, mahoragaSound].forEach(s => { if (s !== sound) { s.pause(); s.currentTime = 0; } });
+        if (sound.paused) { sound.loop = true; sound.play(); }
+    }
+    function stopAllSounds() { [sukunaSound, gojoSound, mahoragaSound].forEach(s => { s.pause(); s.currentTime = 0; }); }
+
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = 1280; offCanvas.height = 720;
+    const offCtx = offCanvas.getContext('2d');
+
+    const shrineImage = document.getElementById('shrine_img');
+    const mahoragaImage = document.getElementById('mahoraga_img');
+    const mahoragaBgImage = document.getElementById('mahoraga_bg_img');
+    
+    let activeState = 'IDLE'; 
+    let stateHoldFrames = 0;  
+    const DROPOUT_TOLERANCE = 15; 
+    let frameCount = 0;
+    let handTargetX = 0, handTargetY = 0;
+    
+    let gojoParticles = [];
+    let domainDebris = [];
+    for (let i = 0; i < 40; i++) {
+      domainDebris.push({ x: Math.random() * 1280, y: Math.random() * 720, size: Math.random() * 25 + 8, vy: -0.3 - Math.random() * 1.5, vx: (Math.random() - 0.5) * 0.5, rot: Math.random() * Math.PI * 2, vrot: (Math.random() - 0.5) * 0.05, sides: Math.floor(Math.random() * 4) + 3 });
+    }
+    let sukunaEmbers = [];
+    let mahoragaAsh = [];
+    for(let i=0; i < 70; i++) {
+       sukunaEmbers.push({ x: Math.random() * 1280, y: Math.random() * 720, size: Math.random() * 4 + 1, vy: -1 - Math.random() * 3, vx: (Math.random() - 0.5) * 2 });
+       mahoragaAsh.push({ x: Math.random() * 1280, y: Math.random() * 720, size: Math.random() * 3 + 1, vy: -0.5 - Math.random() * 1.5, vx: (Math.random() - 0.5) * 1.5 });
+    }
+
+    function isCurled(hand, tipIdx, knuckleIdx) {
+      const tipDist = Math.hypot(hand[tipIdx].x - hand[0].x, hand[tipIdx].y - hand[0].y);
+      const knuckleDist = Math.hypot(hand[knuckleIdx].x - hand[0].x, hand[knuckleIdx].y - hand[0].y);
+      return tipDist < knuckleDist;
+    }
+
+    function onHandsResults(results) {
+      let detectedState = 'IDLE';
+      let gojoTarget = null;
+      const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+      
+      if (numHands === 2) {
+        if (results.multiHandedness && results.multiHandedness.length === 2) {
+          if (results.multiHandedness[0].label !== results.multiHandedness[1].label) {
+            const h1 = results.multiHandLandmarks[0], h2 = results.multiHandLandmarks[1];
+            const wristDist = Math.hypot(h1[0].x - h2[0].x, h1[0].y - h2[0].y);
+            const indexDist = Math.hypot(h1[8].x - h2[8].x, h1[8].y - h2[8].y);
+            if (wristDist < 0.35 || indexDist < 0.35) {
+              detectedState = 'SUKUNA';
+            }
+          }
+        }
+      } 
+      else if (numHands === 1) {
+        const h = results.multiHandLandmarks[0];
+        
+        const indexMidDist = Math.hypot(h[8].x - h[12].x, h[8].y - h[12].y);
+        const thumbPinkyDist = Math.hypot(h[4].x - h[20].x, h[4].y - h[20].y);
+        
+        const ringCurled = isCurled(h, 16, 14);
+        const pinkyCurled = isCurled(h, 20, 18);
+        
+        if (thumbPinkyDist > 0.16 && !ringCurled && !pinkyCurled) {
+          detectedState = 'MAHORAGA';
+        } 
+        else if (indexMidDist < 0.04 && ringCurled && pinkyCurled) {
+          detectedState = 'GOJO';
+          gojoTarget = { x: h[8].x, y: h[8].y };
+        }
+      }
+
+      if (detectedState !== 'IDLE') {
+        activeState = detectedState;
+        stateHoldFrames = DROPOUT_TOLERANCE;
+        if (detectedState === 'GOJO' && gojoTarget) {
+          handTargetX = handTargetX === 0 ? gojoTarget.x * canvasElement.width : handTargetX + (gojoTarget.x * canvasElement.width - handTargetX) * 0.3;
+          handTargetY = handTargetY === 0 ? gojoTarget.y * canvasElement.height : handTargetY + (gojoTarget.y * canvasElement.height - handTargetY) * 0.3;
+        }
+        // --- AUDIO TRIGGER ---
+        if (activeState === 'SUKUNA') playSound(sukunaSound);
+        if (activeState === 'GOJO') playSound(gojoSound);
+        if (activeState === 'MAHORAGA') playSound(mahoragaSound);
+      } else {
+        if (stateHoldFrames > 0) stateHoldFrames--;
+        else { activeState = 'IDLE'; handTargetX = 0; stopAllSounds(); }
+      }
+    }
+
+    function onSegmentationResults(results) {
+      frameCount++;
+      offCtx.save();
+      offCtx.clearRect(0, 0, offCanvas.width, offCanvas.height);
+      offCtx.drawImage(results.image, 0, 0, offCanvas.width, offCanvas.height);
+      offCtx.globalCompositeOperation = 'destination-in';
+      offCtx.filter = 'blur(4px)'; 
+      offCtx.drawImage(results.segmentationMask, 0, 0, offCanvas.width, offCanvas.height);
+      offCtx.filter = 'none';
+      offCtx.restore();
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      if (activeState !== 'IDLE') {
+        let intensity = activeState === 'SUKUNA' ? 12 : activeState === 'GOJO' ? 6 : 4;
+        const shakeX = (Math.random() - 0.5) * intensity;
+        const shakeY = (Math.random() - 0.5) * intensity;
+        canvasCtx.translate(shakeX, shakeY);
+
+        if (activeState === 'SUKUNA') {
+          canvasCtx.drawImage(shrineImage, -20, -20, canvasElement.width + 40, canvasElement.height + 40);
+          canvasCtx.fillStyle = 'rgba(74, 0, 5, 0.45)'; 
+          canvasCtx.fillRect(-20, -20, canvasElement.width + 40, canvasElement.height + 40);
+
+          sukunaEmbers.forEach(e => {
+            e.y += e.vy; e.x += e.vx;
+            if (e.y < -10) e.y = canvasElement.height + 10;
+            canvasCtx.beginPath(); canvasCtx.arc(e.x, e.y, e.size, 0, Math.PI * 2);
+            canvasCtx.fillStyle = Math.random() > 0.5 ? '#ef4444' : '#f97316'; canvasCtx.fill();
+          });
+        } 
+        else if (activeState === 'MAHORAGA') {
+          canvasCtx.drawImage(mahoragaBgImage, -20, -20, canvasElement.width + 40, canvasElement.height + 40);
+          canvasCtx.fillStyle = 'rgba(5, 2, 2, 0.4)';
+          canvasCtx.fillRect(-20, -20, canvasElement.width + 40, canvasElement.height + 40);
+
+          canvasCtx.save();
+          canvasCtx.globalCompositeOperation = 'screen'; 
+          canvasCtx.translate(canvasElement.width / 2, canvasElement.height / 5.5);
+          const spin3D = Math.cos(frameCount * 0.05); 
+          canvasCtx.scale(spin3D, 1);
+          canvasCtx.filter = 'sepia(1) hue-rotate(320deg) saturate(3)'; 
+          canvasCtx.drawImage(mahoragaImage, -425, -425, 850, 850);
+          canvasCtx.restore();
+
+          mahoragaAsh.forEach(e => {
+            e.y += e.vy; e.x += e.vx;
+            if (e.y < -10) e.y = canvasElement.height + 10;
+            canvasCtx.beginPath(); canvasCtx.arc(e.x, e.y, e.size, 0, Math.PI * 2);
+            canvasCtx.fillStyle = 'rgba(200, 200, 200, 0.6)'; canvasCtx.fill();
+          });
+        } 
+        else if (activeState === 'GOJO') {
+          let bgGradient = canvasCtx.createLinearGradient(0, 0, 0, canvasElement.height);
+          bgGradient.addColorStop(0, '#020005'); bgGradient.addColorStop(0.5, '#16042b'); bgGradient.addColorStop(1, '#05000a');
+          canvasCtx.fillStyle = bgGradient; canvasCtx.fillRect(-20, -20, canvasElement.width + 40, canvasElement.height + 40);
+
+          if (Math.random() > 0.92) {
+            canvasCtx.fillStyle = 'rgba(216, 180, 254, 0.1)'; canvasCtx.fillRect(-20, -20, canvasElement.width + 40, canvasElement.height + 40);
+            canvasCtx.save(); canvasCtx.beginPath();
+            let lx = Math.random() * canvasElement.width, ly = -20; canvasCtx.moveTo(lx, ly);
+            for(let b=0; b<8; b++) { lx += (Math.random() - 0.5) * 300; ly += (canvasElement.height / 8) + (Math.random() * 20); canvasCtx.lineTo(lx, ly); }
+            canvasCtx.lineWidth = 3 + Math.random() * 5; canvasCtx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+            canvasCtx.shadowBlur = 30; canvasCtx.shadowColor = '#d946ef'; canvasCtx.stroke(); canvasCtx.restore();
+          }
+          canvasCtx.fillStyle = '#0a0314'; canvasCtx.strokeStyle = '#3b1675'; canvasCtx.lineWidth = 1.5;
+          domainDebris.forEach(d => {
+            d.y += d.vy; d.x += d.vx; d.rot += d.vrot; if (d.y < -50) d.y = canvasElement.height + 50; 
+            canvasCtx.save(); canvasCtx.translate(d.x, d.y); canvasCtx.rotate(d.rot); canvasCtx.beginPath();
+            for (let i = 0; i < d.sides; i++) {
+              let angle = (i / d.sides) * Math.PI * 2; let px = Math.cos(angle) * d.size, py = Math.sin(angle) * d.size;
+              if (i === 0) canvasCtx.moveTo(px, py); else canvasCtx.lineTo(px, py);
+            }
+            canvasCtx.closePath(); canvasCtx.fill(); canvasCtx.stroke(); canvasCtx.restore();
+          });
+        }
+
+        canvasCtx.globalCompositeOperation = 'source-over';
+        canvasCtx.drawImage(offCanvas, 0, 0);
+
+        let vignette = canvasCtx.createRadialGradient(canvasElement.width/2, canvasElement.height/2, 250, canvasElement.width/2, canvasElement.height/2, 900);
+        vignette.addColorStop(0, 'rgba(0,0,0,0)');
+        vignette.addColorStop(1, activeState === 'SUKUNA' ? 'rgba(20,0,0,0.95)' : activeState === 'MAHORAGA' ? 'rgba(10,0,0,0.95)' : 'rgba(0,0,0,0.95)'); 
+        canvasCtx.fillStyle = vignette;
+        canvasCtx.translate(-shakeX, -shakeY); 
+        canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+        if (activeState === 'SUKUNA' && Math.random() > 0.4) {
+          canvasCtx.save(); canvasCtx.beginPath();
+          let sx = Math.random() * canvasElement.width, sy = Math.random() * canvasElement.height;
+          canvasCtx.moveTo(sx, sy); canvasCtx.lineTo(sx + (Math.random() - 0.5) * 1000, sy + (Math.random() - 0.5) * 1000);
+          canvasCtx.lineWidth = 2 + Math.random() * 5; canvasCtx.strokeStyle = Math.random() > 0.3 ? 'rgba(0, 0, 0, 0.9)' : 'rgba(220, 38, 38, 0.9)'; 
+          canvasCtx.shadowBlur = 15; canvasCtx.shadowColor = '#dc2626'; canvasCtx.stroke(); canvasCtx.restore();
+        }
+
+        if (activeState === 'GOJO' && handTargetX !== 0) {
+          const screenX = handTargetX, screenY = handTargetY;
+          if (gojoParticles.length < 40) {
+            const angle = Math.random() * Math.PI * 2; const startDist = 180 + Math.random() * 120;
+            gojoParticles.push({ x: screenX + Math.cos(angle) * startDist, y: screenY + Math.sin(angle) * startDist, size: Math.random() * 4 + 2, speed: 0.1 + Math.random() * 0.08 });
+          }
+          canvasCtx.shadowBlur = 20; canvasCtx.shadowColor = "#d946ef";
+          for (let i = gojoParticles.length - 1; i >= 0; i--) {
+            let p = gojoParticles[i]; p.x += (screenX - p.x) * p.speed; p.y += (screenY - p.y) * p.speed;
+            canvasCtx.beginPath(); canvasCtx.arc(p.x, p.y, p.size, 0, Math.PI * 2); canvasCtx.fillStyle = "#f472b6"; canvasCtx.fill();
+            if (Math.hypot(p.x - screenX, p.y - screenY) < 20) gojoParticles.splice(i, 1);
+          }
+          const boltCount = 10; let boltPaths = [];
+          for (let i = 0; i < boltCount; i++) {
+            let points = [{ x: screenX, y: screenY }], currentX = screenX, currentY = screenY;
+            let baseAngle = (i * (Math.PI * 2 / boltCount)) + (Math.random() - 0.5) * 0.5;
+            let totalSegments = 6, segmentLength = (160 + Math.random() * 80) / 6;
+            for (let j = 0; j < 6; j++) {
+              let targetX = currentX + Math.cos(baseAngle) * segmentLength + (Math.random() - 0.5) * 45;
+              let targetY = currentY + Math.sin(baseAngle) * segmentLength + (Math.random() - 0.5) * 45;
+              points.push({ x: targetX, y: targetY }); currentX = targetX; currentY = targetY;
+            }
+            boltPaths.push(points);
+          }
+          canvasCtx.lineWidth = 14; canvasCtx.strokeStyle = "rgba(109, 40, 217, 0.45)"; canvasCtx.lineCap = "round";
+          boltPaths.forEach(path => { canvasCtx.beginPath(); canvasCtx.moveTo(path[0].x, path[0].y); for (let k = 1; k < path.length; k++) canvasCtx.lineTo(path[k].x, path[k].y); canvasCtx.stroke(); });
+          canvasCtx.lineWidth = 6; canvasCtx.strokeStyle = "#d946ef"; canvasCtx.shadowBlur = 30; canvasCtx.shadowColor = "#f472b6";
+          boltPaths.forEach(path => { canvasCtx.beginPath(); canvasCtx.moveTo(path[0].x, path[0].y); for (let k = 1; k < path.length; k++) canvasCtx.lineTo(path[k].x, path[k].y); canvasCtx.stroke(); });
+          canvasCtx.lineWidth = 2; canvasCtx.strokeStyle = "#ffffff"; canvasCtx.shadowBlur = 0;
+          boltPaths.forEach(path => { canvasCtx.beginPath(); canvasCtx.moveTo(path[0].x, path[0].y); for (let k = 1; k < path.length; k++) canvasCtx.lineTo(path[k].x, path[k].y); canvasCtx.stroke(); });
+
+          canvasCtx.beginPath(); canvasCtx.arc(screenX, screenY, 22 + (Math.random() * 5), 0, Math.PI * 2);
+          let coreGradient = canvasCtx.createRadialGradient(screenX, screenY, 1, screenX, screenY, 26);
+          coreGradient.addColorStop(0, '#ffffff'); coreGradient.addColorStop(0.3, '#f472b6'); coreGradient.addColorStop(1, 'rgba(124, 58, 237, 0)');
+          canvasCtx.fillStyle = coreGradient; canvasCtx.shadowBlur = 40; canvasCtx.shadowColor = "#ffffff"; canvasCtx.fill();
+        }
+      } else {
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+      }
+      canvasCtx.restore();
+    }
+
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    hands.onResults(onHandsResults);
+
+    const selfieSegmentation = new SelfieSegmentation({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`});
+    selfieSegmentation.setOptions({ modelSelection: 1 });
+    selfieSegmentation.onResults(onSegmentationResults);
+
+    const camera = new Camera(videoElement, {
+      onFrame: async () => {
+        await hands.send({image: videoElement});
+        await selfieSegmentation.send({image: videoElement});
+      },
+      width: 1280, height: 720
+    });
+    camera.start();
+  </script>
+</body>
+</html>
